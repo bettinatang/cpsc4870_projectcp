@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dango Snake</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19.1/dist/lil-gui.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/[a]jax/libs/mathjs/10.3.0/math.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/quaternion@1.5.1/quaternion.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/numeric@1.2.6/numeric-1.2.6.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stats.js@0.17.0/build/stats.min.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/": "https://unpkg.com/three@0.160.0/"
+            }
+        }
+    </script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #ddd5e8; }
+        #info 
+        {
+            position: fixed;
+            bottom:16px;
+            left:50%;
+            transform: translateX(-50%); 
+            font-family: Georgia, serif;
+            font-size: 13px;
+            border-radius: 20px ;
+            pointer-events: none;
+            letter-spacing: 0.05em; 
+            white-space: nowrap;  
+            padding: 7px 22px; 
+            color: #5a3e6b;  
+            background: rgba(220,210,235,0.85 );
+        }
+    </style>
+</head>
+<body>
+<div id="info">🍡 Drag the <b>control points</b> to reshape & enable <b>auto-slither</b> in the panel</div>
+
+<script type="module">
+import {ThreeEngine} from "./js/utils/utils_three.js";
+import{TransformGizmoEngine} from "./js/utils/utils_transform_gizmo.js";
+import {add_matrix_matrix, mul_matrix_scalar} from "./js/utils/utils_math.js";  
+import *  as THREE from 'three' ;
+//engine  
+let engine = ThreeEngine.new_default_3d(2.5, 1.8, 1.2);
+
+//add /background
+engine.scene.background = new THREE.Color(0xddd5e8);
+
+
+//more realistic dango lighntning(key, fill back)
+const key_light =  new THREE.DirectionalLight(0xfff5e0, 1.8) ;
+key_light.position.set(5, 8, 4 );
+engine.scene.add(key_light);  
+const fill_light = new THREE.PointLight(0xd8c8f0, 40, 30); 
+fill_light.position.set(-4,  3, 4);
+engine.scene.add(fill_light);
+const back_light = new THREE.PointLight(0xffd6ee, 25, 20);
+back_light.position.set(0, -3, 4);  
+engine.scene.add(back_light); 
+//add ambient light
+const ambient = new THREE.AmbientLight(0xe8dff5, 1.2);
+engine.scene.add(ambient);
+
+//for shiny mochis
+const DANGO_MATS = 
+[
+    new THREE.MeshStandardMaterial
+    ( 
+        {color:new THREE.Color(0xffb7c5),//sakurapink
+        emissive:new THREE.Color(0xff6688),
+        emissiveIntensity: 0.12,
+        roughness:0.28,
+        metalness: 0.05,}
+    ),
+    
+    new THREE.MeshStandardMaterial
+    (
+        {color: new THREE.Color(0xf5f0eb),//warm white
+        emissive:new THREE.Color(0xffffff), 
+        emissiveIntensity: 0.06,
+        roughness:0.22, 
+        metalness: 0.0, 
+    }),
+
+    new THREE.MeshStandardMaterial
+    (
+        {color:new THREE.Color(0x88c070),//matcha green c
+        emissive:new THREE.Color(0x44aa44),
+        emissiveIntensity: 0.10,
+        roughness:0.30,
+        metalness: 0.0,
+    }),
+];
+
+//material for the skewer 
+const SKEWER_MAT = new THREE.MeshStandardMaterial
+(
+    {color: 0xc8a96e, 
+    roughness:0.85,  
+    metalness: 0.0,}
+);
+
+//sphere geometry //sphere &cylinder
+const SPHERE_GEO = new THREE.SphereGeometry(1, 40, 40);  
+const SKEWER_GEO = new THREE.CylinderGeometry( 0.025, 0.025, 1, 12);  
+
+//30 ? max num of dangos
+const MAX_DANGO = 30;
+const sphere_meshes =[];  
+for (let i=0; i<MAX_DANGO;i++)  
+{
+    const m  = new THREE.Mesh(SPHERE_GEO,DANGO_MATS[i%3]); 
+    engine.scene.add(m); 
+    sphere_meshes.push(m);  
+
+    m.visible = false;  
+    m.castShadow = true;
+}
+
+//skewer meshes one per dango
+const MAX_SKEWERS =MAX_DANGO-1;
+const skewer_meshes =[]; 
+
+for (let i=0; i<MAX_SKEWERS; i++) 
+{
+    const m =  new THREE.Mesh(SKEWER_GEO,SKEWER_MAT);  
+    engine.scene.add(m); 
+    skewer_meshes.push(m);
+
+    m.visible = false;
+}
+
+
+//need to convert z-up to y-up bc of three.js
+function zu_pos(x, y, z) 
+{
+    return new THREE.Vector3(x, z, -y);
+}
+
+function to_list(col){return [col[0][0], col[1][0],col[2][0]]; }
+
+//pre-made settings
+let settings = 
+{
+    num_dango:15,
+    sphere_radius: 0.15,
+    show_curve: true,  
+    bspline_degree: 3,
+    auto_slither:false,
+    slither_speed: 0.5, 
+    slither_amplitude: 0.8,  
+};
+
+//control points
+let control_points  =  [[[-2.0],[0.0],[0.0]],[[-1.2],[0.8],[0.5]],[[-0.3],[0.3], [-0.4]], [[ 0.5],[-0.5],[0.6]],  [[ 1.3],[0.4],[0.0]],[[ 2.0],[0.0],[-0.4]], ];
+//6 control points
+const NUM_CP = control_points.length;
+//for autoslither, use in offset
+let base_positions =  control_points.map(cp => [[cp[0][0]], [cp[1][0]], [cp[2][0]]]);  
+
+//use transformgizmoengine for gizmos 
+let gizmo_engine = new TransformGizmoEngine(engine, 0.03);  
+let gizmo_idxs = control_points.map( cp =>gizmo_engine.add_gizmo_SO3_matrix_and_position(engine,[[1,0,0],[0,1,0],[0,0,1]], cp,  0.35));
+
+
+
+
+//b-spline
+//build the uniform knot vector j
+function make_knots(n, k) 
+{
+    let offset = -Math.floor(k/2);
+    return Array.from({length:n + k},(_, i) => offset+i);  
+}
+
+function bk(t, i, k, knots)
+{
+    if (k ===1)return (t>=knots[i] &&  t < knots[i+ 1]) ? 1.0 : 0.0 ;
+
+    let left=0
+    let right=0; 
+    let d1 = knots[i+k-1]-knots[i]; 
+    let d2 = knots[i+k]-knots[i+1];  
+    if (d1 > 1e-10) left = ((t - knots[i])/ d1) * bk( t, i,k-1, knots); 
+    if (d2 > 1e-10) right = ((knots[i+k] - t) /d2) *  bk(t, i+1,k-1, knots); 
+    
+    
+    return left + right;
+}
+//use weighted sum of contrll points
+function bspline_eval( t, pts,k) 
+{
+    let n=pts.length;
+    let knots =  make_knots(n,k);
+    let t_min =knots[k-1],t_max = knots[n] -1e-8;  
+    
+    t = Math.max(t_min,Math.min(t_max, t)) ;
+    let result=[[0],[0],[0]];
+    for (let i =0; i<n; i++) 
+    {
+        let w =  bk(t, i, k, knots) ;
+        if (Math.abs(w) < 1e-12) continue;
+        
+        result = add_matrix_matrix(result,mul_matrix_scalar(pts[i],w));
+    }
+    return result;
+}
+//return the valid parameter range
+function bspline_t_range(n, k) 
+{
+    let knots =  make_knots(n,k);
+    return [knots[k-1],knots[n]-1e-8];  
+}
+
+//arc length parameterization so the balls are always evenly spaced no matter how the control points r dragged
+const N_SAMPLES = 400;
+
+
+function build_arc_table(pts, k) 
+{
+    let n = pts.length;
+    let [t_min,t_max] = bspline_t_range(n,k); 
+    let table = [],cam=0;
+    let prev =bspline_eval(t_min, pts,k) ;  
+    table.push
+    (
+        {t:t_min, d:0 }
+    );
+    for (let i= 1; i<= N_SAMPLES; i++)
+    {
+        let t = t_min + (i/ N_SAMPLES)*(t_max -t_min);  
+        let curr = bspline_eval(t, pts, k); 
+        let dx = curr[0][0] - prev[0][0], dy = curr[1][0] - prev[1][0], dz =curr[2][0]-prev[2][0];  
+        
+        cam += Math.sqrt(dx * dx + dy* dy + dz * dz);
+        table.push({t, d:cam}) ; 
+        prev = curr; 
+    }
+    return table;  
+}
+
+function arc_t(table,frac)
+{
+    let total= table[table.length-1].d;
+    let target = frac*total;
+    let lo = 0;
+    let hi =  table.length-1; 
+
+    while (lo < hi - 1) 
+    {
+        let mid = (lo+hi) >>1;
+        if (table[mid].d<target) lo = mid;   else hi = mid; 
+    }
+    let dl =table[lo].d
+    let du = table[hi].d;
+    let r = (du - dl)<1e-10 ? 0 :  (target -  dl)/(du - dl) ;
+    return table[lo].t + r*(table[hi].t-table[lo].t);  
+}
+
+//util
+function norm3(v)
+{
+    let len = Math.sqrt(v[0]**2 + v[1]**2 + v[2]**2);
+    return len < 1e-10 ? [0,0,1] : [v[0]/len, v[1]/len, v[2]/len];}
+
+function add3(a, b, s = 1) {return[a[0]+b[0]* s, a[1]+b[1] * s, a[2] + b[2] * s]; }  
+
+
+
+
+
+// lilgui
+const gui = new lil.GUI({ title: '🍡 Dango Snake' });
+gui.add(settings,'num_dango', 3,30,1).name( '# Dango'); 
+gui.add(settings,'sphere_radius',0.08, 0.35, 0.01).name( 'Ball Size');
+gui.add(settings,'show_curve').name('Show Curve') ;  
+gui.add(settings,'bspline_degree', 2,4,1).name('B-Spline degree'); 
+
+let sf = gui.addFolder('Auto slither');
+sf.add(settings,'auto_slither').name('Enable');
+sf.add(settings,'slither_speed', 0.1,2.0, 0.05).name('Speed'); 
+sf.add(settings,'slither_amplitude', 0.1, 2.0,  0.1).name('amplitude'); 
+sf.open();  
+//
+//connect skewers netween dango
+function place_skewer(mesh, p0, p1) 
+{
+    let a=zu_pos(p0[0], p0[1], p0[2]);
+    let b=zu_pos(p1[0], p1[1], p1[2]);
+    let mid = a.clone().add(b).multiplyScalar(0.5) ;
+    let dir = b.clone().sub(a);  
+    let len =  dir.length() ;
+    
+    if (len < 1e-6){mesh.visible =false; return;}
+
+    mesh.visible =true;
+    mesh.position.copy(mid);  
+    mesh.scale.set(1,len,1);
+    
+
+    let axis =new THREE.Vector3(0,  1, 0);
+    let q=new THREE.Quaternion().setFromUnitVectors( axis, dir.normalize()) ;
+    mesh.setRotationFromQuaternion(q) ;
+}
+
+
+
+
+engine.animation_loop(() => {
+    
+    //
+    
+    let time =  engine.get_time_elapsed();
+    let k = settings.bspline_degree  + 1;  
+
+    //gizmo positions
+    let pts = gizmo_idxs.map(( gidx) => 
+    {
+        let pose = gizmo_engine.get_gizmo_pose_as_SO3_matrix_and_position(gidx);//
+        
+        return pose[1];
+    }) ;  
+
+    //auto slither //check back
+    if (settings.auto_slither)
+    {
+        pts.forEach((p, i) => 
+        {
+            let phase = (i / NUM_CP)*Math.PI *2;  
+            let A= settings.slither_amplitude;
+            let sp=settings.slither_speed;
+            
+            p[1][0]= base_positions[i][1][0]+ A * Math.sin(time *  sp +  phase) ;
+            p[2][0]= base_positions[i][2][0]+ A * 0.4* Math.sin(time * sp * 1.3+ phase + 1.1 );
+            
+            gizmo_engine.set_position_of_gizmo( gizmo_idxs[i],p) ;
+        });
+    } 
+    else 
+    {
+        pts.forEach((p, i) => 
+        {
+            base_positions[i][0][0] =  p[0][0];
+            base_positions[i][1][0] =  p[1][0];  
+            base_positions[i][2][0] =  p[2][0]; 
+        }); 
+    }
+
+    //arc lenghth table^ 
+    let arc_table = build_arc_table(pts, k);
+
+    //draw the bspline
+    if (settings.show_curve)
+    {
+         const N_CURVE =  120;  
+        for (let i = 0; i < N_CURVE - 1; i++)
+        {
+            let p0 =to_list(bspline_eval( arc_t(arc_table, i / (N_CURVE-1)),pts, k));
+            let p1 =to_list(bspline_eval( arc_t(arc_table,(i+1)/(N_CURVE-1)),pts, k));  
+            engine.draw_debug_line(p0,  p1, true, 0.004, 0xc084a0,  0.5); 
+        }
+    }
+
+    //dangos & skewers
+    let n_dango = Math.floor(settings.num_dango) ; 
+    
+    let r = settings.sphere_radius;  
+
+
+
+    // Collect positions first (needed for skewers)
+    let positions = [];
+    for (let i= 0; i<n_dango; i++)  
+    {
+        let frac = n_dango === 1 ?  0.5 :i / (n_dango-1);
+        positions.push(to_list(bspline_eval(arc_t(arc_table, frac), pts,k)));  
+    }
+
+    //stick stick out
+    let skewer_pts = [...positions]; //
+    if (n_dango >= 2) 
+    {
+
+        let p_prev =  positions[n_dango-2];
+        let p_last =  positions[n_dango-1];
+        let dir = norm3 
+        ([
+            p_last[0]-p_prev[0],
+            p_last[1]-p_prev[1],
+            p_last[2]-p_prev[2] ,
+        ]);
+
+        let overhang = r *4.5; //poke out!!
+        skewer_pts.push(add3(p_last, dir,overhang));  
+    }
+
+    //skweres through the spheres
+    for (let i=0; i<MAX_SKEWERS; i++) 
+    {
+        if (i< skewer_pts.length-1)
+         {
+            place_skewer(skewer_meshes[i], skewer_pts[i],skewer_pts[i+1]) ;
+        }
+        else
+        {
+            skewer_meshes[i].visible=false ;
+        }
+    }
+
+    //spheres
+    for (let i =0; i<MAX_DANGO; i++)
+    {
+        if (i>= n_dango)
+        {
+            sphere_meshes[i].visible = false;  
+
+            continue;
+        }
+        let pos =positions[i];
+        let yup = zu_pos(pos[0],pos[1],pos[2]) ;
+        let mesh =sphere_meshes[i] ; 
+
+        mesh.visible=true;
+        mesh.material = DANGO_MATS[i%3];
+        mesh.position.copy(yup) ;
+        
+
+        //squish calc
+
+       
+        //check back if theres time
+        //squish the spheres usingn smooth distance-based flattening toward neighboring dangoso
+        //max_squish 0 - touching to far apart
+    
+        let sx = r;
+        let sy = r;
+        let sz = r;
+
+        const max_squish = 0.18; 
+        const squish_range = r * 3.5; //squish fades 
+
+
+        function apply_smooth_squish(neighbor_pos)   
+        {
+            let nyup =zu_pos(neighbor_pos[0],neighbor_pos[1],neighbor_pos[2] );
+            let dx = yup.x-nyup.x; 
+            let dy = yup.y- nyup.y;
+            let dz = yup.z-nyup.z; 
+
+            let dist = Math.sqrt(dx*dx + dy*dy+ dz*dz);  
+
+            //1 when touching, 0 when far  
+            let t =1.0 - Math.min(dist /squish_range, 1.0); 
+            let amount = max_squish * t*t;
+
+            if (amount <0.001) return; //if negligable j skip? see if necessary
+
+            // Compress along the dominant axis of the contact direction
+            let ax =  Math.abs(dx), ay=Math.abs(dy), az=Math.abs(dz) ;
+            if (ax>ay && ax > az) sx=Math.min(sx, r *(1.0 - amount)) ;
+           
+            else if(ay >ax && ay > az) sy =Math.min(sy, r*(1.0 - amount)) ;
+
+            else sz = Math.min(sz, r*(1.0 - amount));  
+        }
+
+        if (i > 0) apply_smooth_squish(positions[i-1]);
+        if (i < n_dango - 1) apply_smooth_squish(positions[i + 1 ]);
+
+
+        
+        mesh.scale.set(sx, sy, sz) ;
+    }
+
+    // 
+});
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
